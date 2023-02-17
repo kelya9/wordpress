@@ -1,0 +1,81 @@
+#Description: Creating a high availability website. RDS is my SQL and multi-AZ will be enabled. Website used is wordpress and apache webserver. Create writable and readable nodes
+#If Admins hit the website, they will be directed to the writable nodes and users to the readable nodes using Route 53. Content of website will be synced with both buckets
+#One S3 bucket will used as a backup if website goes down. A crontab  used to upload content every minute.
+# Use Content Network Delivery( Cloudfront) used to get the user to access the media stored on the other S3 bucket for any incoming request.
+
+#Create a vpc
+aws ec2 create-vpc \
+--cidr-block 10.0.0.0/16 \
+--tag-specification 'ResourceType=vpc,Tags=[{Key=Name,Value=MyVpc-coditech}]'
+
+# Creating subnets 50% - use visual subnet calculator -  - subnetting and route table helps define who has access to the i
+aws ec2 create-subnet \
+--vpc-id vpc-0db58e45dc6736ba7 \
+--cidr-block 10.0.0.0/18 \
+--tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=myprivate-subnet}]'
+
+aws ec2 create-subnet \
+--vpc-id vpc-0db58e45dc6736ba7 \
+--cidr-block 10.0.64.0/18 \
+--tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=mypublic-subnet}]'
+
+#Create 2 S3 buckets
+aws s3 mb s3://codixtech1-code-2022
+aws s3 mb s3://codixtech1-image-2022
+
+#Create a cloud-front distribution - origin name is that of codxtech1-image
+aws cloudfront create-distribution --origin-domain-name codixtech1-image-2022.s3.amazonaws.com
+
+# Need two security groups vpc id = vpc-0db58e45dc6736ba7  , "GroupId": "sg-06ef407468e8ad5c1
+# sg only allow, cannot deny with them
+
+aws ec2 create-security-group --group-name WEB-SecurityGroup \
+--description "My security group" \
+--vpc-id vpc-0db58e45dc6736ba7 \
+--tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=webserver}]'
+
+# create ingress rules
+aws ec2 authorize-security-group-ingress --group-id sg-06ef407468e8ad5c1 --protocol tcp --port 22 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id sg-06ef407468e8ad5c1 --protocol tcp --port 80 --cidr 0.0.0.0/0
+
+# Create security-group for RDS sg-04f50d79974a5f804
+aws ec2 create-security-group --group-name RDS-SecurityGroup \
+--description "My security group" \
+--vpc-id vpc-0db58e45dc6736ba7 \
+--tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=rdsserver}]'
+
+# create ingress rules for RDS - only webserver will access rds through default port 3306 of mySQL
+aws ec2 authorize-security-group-ingress --group-id sg-04f50d79974a5f804 --protocol tcp --port 3306 --source-group sg-06ef407468e8ad5c1 
+
+#need to create a db subnet-group to force the rds to be created in my created VPC and not the default VPC
+aws rds create-db-subnet-group \
+    --db-subnet-group-name mysubnetgroup \
+    --db-subnet-group-description "test DB subnet group" \
+    --subnet-ids '["subnet-0014a3f7ccc079ebd", "subnet-06c14d528f04ea311"]'
+
+# create mySQL database
+aws rds create-db-instance \
+  --db-instance-identifier codixtech \
+  --db-instance-class db.t2.micro \
+  --db-subnet-group-name mysubnetgroup \
+  --engine mysql \
+  --master-username codixtech \
+  --master-user-password codixtech \
+  --allocated-storage 20 \
+  --backup-retention-period 3 \
+  --multi-az \
+  --no-publicly-accessible \
+  --vpc-security-group-ids sg-04f50d79974a5f804
+
+# Create ec2 instance
+aws ec2 run-instances \
+--image-id ami-09d3b3274b6c5d4aa \
+--count 1 \
+--instance-type t2.micro \
+--key-name EC2class \
+--security-group-ids sg-06ef407468e8ad5c1 \
+--subnet-id subnet-03b6c92a069c6315e\
+--user-data  file://scriptnew.sh \
+--tag-specifications \
+'ResourceType=instance,Tags=[{Key=Name,Value=web1}]'\
+--iam-instance-profile Name=ec2s3access-Instance-Profile
